@@ -154,7 +154,13 @@ def run_case(name, video, config):
             ipc.command("seek", 12, "absolute+exact")
             ipc.command("set_property", "pause", False)
             helper_log = ROOT / "outputs/plugin" / f"{player.pid}-{ready['token']}.log"
-            wait_for(lambda: "subtitle_translated" in helper_log.read_text(encoding="utf-8"), 30)
+            wait_for(
+                lambda: (
+                    helper_log.exists()
+                    and "subtitle_translated" in helper_log.read_text(encoding="utf-8")
+                ),
+                30,
+            )
             report["helper_log"] = str(helper_log)
             report["translated"] = True
             ipc.command("set_property", "pause", True)

@@ -147,5 +147,26 @@ class TranslationPreparationTests(unittest.TestCase):
         self.assertEqual(prepare_translation("Alice, please wait.").output_prefix, "")
 
 
+class ExecutableDiscoveryTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "Windows executable discovery")
+    def test_mpv_executable_takes_priority_over_console_wrapper(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from npu_subtitles.media import executable
+
+        with tempfile.TemporaryDirectory() as directory:
+            exe = Path(directory) / "mpv.exe"
+            wrapper = Path(directory) / "mpv.com"
+            exe.touch()
+            wrapper.touch()
+            with patch(
+                "npu_subtitles.media.shutil.which",
+                side_effect=lambda name: str(exe if name == "mpv.exe" else wrapper),
+            ):
+                self.assertEqual(executable(None, "mpv"), str(exe.resolve()))
+                self.assertEqual(executable(str(wrapper), "mpv"), str(wrapper.resolve()))
+
+
 if __name__ == "__main__":
     unittest.main()

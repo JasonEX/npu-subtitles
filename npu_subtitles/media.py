@@ -14,7 +14,10 @@ def hidden_options() -> dict:
 
 
 def executable(value: str | None, name: str) -> str:
-    candidates = [value] if value else [shutil.which(name)]
+    # Prefer the player executable over a .com console wrapper so its PID
+    # identifies the process that owns IPC and plugin logs.
+    found = shutil.which(name + ".exe") if os.name == "nt" else None
+    candidates = [value] if value else [found or shutil.which(name)]
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
             return str(Path(candidate).resolve())
