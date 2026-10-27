@@ -1,0 +1,41 @@
+# Python
+.venv/
+.venv-granite-export/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build / packaging
+build/
+dist/
+*.spec
+*.exe
+
+# Models & runtime data (prepare with tools.models)
+/models/
+samples/
+outputs/
+*.wav
+*.flac
+*.mp3
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+
+# Download / uv caches and local temporary files
+.cache/
+
+# Local research, credentials and machine-specific settings
+/docs/history/
+.env
+.env.*
+!.env.example
+*.pem
+*.key

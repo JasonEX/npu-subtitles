@@ -1,0 +1,32 @@
+[project]
+name = "npu-subtitles"
+version = "0.1.0"
+description = "Local speech recognition and live bilingual movie captions with OpenVINO NPU inference"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "openvino>=2026.4.1",
+    "openvino-tokenizers>=2026.4.1.0",
+    "numpy",
+    "kaldi-native-fbank>=1.22.4",
+    "tokenizers>=0.23.3",
+    "sentencepiece>=0.2.2",
+    "sudachipy>=0.6.10,<0.7",
+    "sudachidict-core>=20250129",
+]
+
+[dependency-groups]
+prepare = [
+    "huggingface-hub", "socksio>=1.0.0,<2", "httpx2>=2.16.0,<3",
+    "zstandard>=0.25.0", "pyyaml>=6.0.3",
+]
+test = ["soundfile"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["F"]

@@ -1,0 +1,26 @@
+MTran NPU adapter attribution
+
+npu_subtitles/translation/marian.py and tools/models/marian_export.py adapt the Marian release parser and graph equations from
+MTranServer, Copyright its contributors, under the Apache License 2.0.
+Original project: https://github.com/xxnuo/MTranServer
+Reference revision: ea3e8b1523c70115d16f2d48027daaf9caeb3e8e
+Original files: src/converter/release.ts and src/converter/graph.ts
+License copy: MTranServer-LICENSE
+
+Modifications: Python/OpenVINO implementation; static padded source shapes and
+attention masks; encoder and one-token SSRU decoder graphs; external recurrence;
+FP16 weight storage; NPU-only execution without an execution-provider fallback.
+MTranServer's automatic CPU selection, quantized ONNX runtime and service are not
+included in this adapter.
+
+The downloaded en-to-zh-Hans and ja-to-en weights and SentencePiece vocabularies come from
+Mozilla Firefox Translations, separately under MPL-2.0. Their exact URLs and
+checksums are recorded alongside the downloaded models in source.json.
+The weight checksum matches models/base-memory/enzh/metadata.json at Mozilla
+repository revision e7957fc407441a5e3e35bbcbf9d60d9b35764618.
+License copy: Mozilla-Translations-LICENSE
+
+The Japanese stage uses models/base/jaen/metadata.json at the same Mozilla
+revision e7957fc407441a5e3e35bbcbf9d60d9b35764618 (version 3.0). The shared
+Japanese/English vocabulary and both graph stages run through the same static
+NPU adapter. Japanese-to-Chinese uses English as a pivot, not a direct model.
