@@ -28,7 +28,7 @@ from npu_subtitles.captions.language import check_language, join_units, lexical_
 from npu_subtitles.paths import ROOT
 
 DEFAULT_MODEL_DIR = ROOT / "models/granite-speech-5.0-470m-turboctc"
-from npu_subtitles.paths import SAMPLE_RATE
+from npu_subtitles.paths import SAMPLE_RATE, SPEECH_RMS_THRESHOLD
 
 VAD_FRAME_SAMPLES = 320
 PRE_ROLL_SAMPLES = 7680
@@ -150,7 +150,7 @@ class GraniteNPU:
         model_dir: Path | str = DEFAULT_MODEL_DIR,
         cache_dir: Path | str | None = None,
         *,
-        energy_threshold: float = 0.008,
+        energy_threshold: float = SPEECH_RMS_THRESHOLD,
         silence_seconds: float = 1.0,
         max_segment_seconds: float = 12.0,
         partial_seconds: float = 0.8,

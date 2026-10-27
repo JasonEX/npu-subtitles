@@ -23,7 +23,7 @@ from npu_subtitles.paths import ROOT
 
 DEFAULT_MODEL_DIR = ROOT / "models/moonshine-streaming-small"
 MEDIUM_MODEL_DIR = ROOT / "models/moonshine-streaming-medium"
-from npu_subtitles.paths import SAMPLE_RATE
+from npu_subtitles.paths import SAMPLE_RATE, SPEECH_RMS_THRESHOLD
 
 CHUNK_SAMPLES = 6400
 NEW_FRAMES = 20
@@ -306,7 +306,7 @@ class MoonshineNPU:
         model_dir: Path | str = DEFAULT_MODEL_DIR,
         cache_dir: Path | str | None = None,
         *,
-        energy_threshold: float = 0.008,
+        energy_threshold: float = SPEECH_RMS_THRESHOLD,
         silence_seconds: float = 1.0,
         max_segment_seconds: float = 12.0,
         partial_seconds: float = 0.8,

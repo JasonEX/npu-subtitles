@@ -184,7 +184,7 @@ class FakePluginSession:
         self.message("npu-overlay", "")
 
     def get(self, name):
-        return {"pause": False}[name]
+        return {"pause": False, "speed": 1.0}[name]
 
     def get_optional(self, name):
         return next(self.positions if name == "time-pos" else self.durations)
@@ -295,6 +295,43 @@ class PluginRobustnessTests(unittest.TestCase):
         ):
             self.assertEqual(mpv_plugin.detect_audio(session, 0), "en")
         self.assertEqual(reader.submitted, [0])
+
+
+class PlaybackJumpTests(unittest.TestCase):
+    def test_jump_rule_ignores_stalls_and_scales_with_speed(self):
+        from npu_subtitles.timeline import position_jumped
+
+        self.assertFalse(position_jumped(0.0, 5.0, 1.0))  # stalled without pause
+        self.assertFalse(position_jumped(0.9, 0.1, 1.0))
+        self.assertTrue(position_jumped(1.0, 0.1, 1.0))
+        self.assertFalse(position_jumped(1.0, 0.1, 2.0))
+        self.assertTrue(position_jumped(-0.2, 0.1, 1.0))
+        self.assertFalse(position_jumped(-0.1, 0.1, 1.0))
+
+    def test_plugin_loops_restart_on_seek_event_or_jump(self):
+        from unittest.mock import patch
+        import mpv_plugin
+
+        clock = iter([0.0, 0.1, 0.2, 0.3])
+        session = SimpleNamespace(ipc=SimpleNamespace(events=[]), get=lambda name: 1.0)
+        jumps = mpv_plugin.PlaybackJumps()
+        with patch("mpv_plugin.time", SimpleNamespace(monotonic=lambda: next(clock))):
+            self.assertFalse(jumps.observe(session, 10.0))
+            self.assertFalse(jumps.observe(session, 10.1))
+            session.ipc.events.append({"event": "seek"})
+            self.assertTrue(jumps.observe(session, 10.2))
+            self.assertEqual(session.ipc.events, [])
+            self.assertTrue(jumps.observe(session, 30.0))
+
+
+class OverlayEventTests(unittest.TestCase):
+    def test_overlay_event_escapes_text_and_clears_when_empty(self):
+        from npu_subtitles.ass import overlay_event
+
+        self.assertEqual(overlay_event(""), "")
+        event = overlay_event("你好{\\b1}\nhello", font="Noto Sans", font_size=30)
+        self.assertTrue(event.startswith("{\\an2\\pos(640,678)\\fnNoto Sans\\fs30\\"))
+        self.assertTrue(event.endswith("你好｛＼b1｝\\Nhello"))
 
 
 class AttachedErrorLoggingTests(unittest.TestCase):

@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Callable
 from npu_subtitles.memory import process_memory
 
-from npu_subtitles.paths import ROOT, SAMPLE_RATE
+from npu_subtitles.paths import ROOT, SAMPLE_RATE, SPEECH_RMS_THRESHOLD
 
 
 @dataclass(frozen=True)
@@ -17,7 +17,7 @@ class InferenceSettings:
     asr_model: str
     translation_model: str
     cache_dir: str
-    vad_threshold: float = 0.008
+    vad_threshold: float = SPEECH_RMS_THRESHOLD
     vad_silence: float = 1.0
     asr_max_seconds: float = 12.0
     person_names: tuple[str, ...] = ()
@@ -32,7 +32,7 @@ def create_backends(
     cache_dir: str,
     progress: Callable[[dict], None] | None = None,
     *,
-    vad_threshold: float = 0.008,
+    vad_threshold: float = SPEECH_RMS_THRESHOLD,
     vad_silence: float = 1.0,
     asr_max_seconds: float = 12.0,
     person_names: tuple[str, ...] = (),

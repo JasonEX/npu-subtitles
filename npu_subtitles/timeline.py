@@ -8,6 +8,15 @@ import math
 from npu_subtitles.paths import SAMPLE_RATE
 
 
+def position_jumped(delta: float, elapsed: float, speed: float) -> bool:
+    """Backward motion, or forward motion that elapsed wall time cannot explain.
+
+    A player can stall without reporting pause (startup, buffering, window
+    changes). Moving less than wall time predicts is never evidence of a seek.
+    """
+    return delta < -0.15 or delta > max(0.0, elapsed) * speed + 0.8
+
+
 @dataclass(frozen=True)
 class PlaybackState:
     epoch: int
@@ -67,14 +76,9 @@ class MediaTimeline:
         changed = previous is not None and paused != previous.paused
         reason = None
         if previous is not None:
-            elapsed = max(0.0, now - previous.sampled_at)
             delta = position - previous.position
-            # A player can stall without reporting pause (startup, buffering,
-            # window changes). Moving less than wall time predicts is never
-            # sufficient evidence of a seek. Detect only impossible forward
-            # motion, actual backwards motion, or explicit player events.
-            jumped = delta > elapsed * max(speed, previous.speed) + 0.8
-            if delta < -0.15 or jumped or (seek_event and abs(delta) > 0.08):
+            jumped = position_jumped(delta, now - previous.sampled_at, max(speed, previous.speed))
+            if jumped or (seek_event and abs(delta) > 0.08):
                 reason = "seek"
                 self.reset(position)
         self.state = PlaybackState(self.epoch, position, now, paused, speed)

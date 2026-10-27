@@ -26,7 +26,8 @@ from npu_subtitles.timeline import MediaTimeline, SAMPLE_RATE
 from npu_subtitles.media import executable, probe_media
 from npu_subtitles.memory import power_status, process_memory
 
-from npu_subtitles.paths import ROOT
+from npu_subtitles.ass import DEFAULT_FONT
+from npu_subtitles.paths import ROOT, SPEECH_RMS_THRESHOLD
 
 
 def parser(*, optional_video: bool = False) -> argparse.ArgumentParser:
@@ -77,7 +78,7 @@ def parser(*, optional_video: bool = False) -> argparse.ArgumentParser:
         default=2,
         help="Explicitly reset an audio stream that falls this far behind",
     )
-    result.add_argument("--vad-threshold", type=float, default=0.008)
+    result.add_argument("--vad-threshold", type=float, default=SPEECH_RMS_THRESHOLD)
     result.add_argument(
         "--vad-silence",
         type=float,
@@ -109,7 +110,7 @@ def parser(*, optional_video: bool = False) -> argparse.ArgumentParser:
     result.add_argument("--end-grace", type=float, default=3)
     result.add_argument("--person-name", action="append", default=[])
     result.add_argument("--timeout", type=float, default=600)
-    result.add_argument("--sub-font", default="Microsoft YaHei")
+    result.add_argument("--sub-font", default=DEFAULT_FONT)
     result.add_argument("--sub-font-size", type=float, default=24)
     result.add_argument("--output-dir", type=Path, default=ROOT / "outputs/live")
     result.add_argument("--cache-dir", type=Path, default=ROOT / ".cache/live-npu")

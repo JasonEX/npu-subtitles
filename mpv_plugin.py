@@ -35,9 +35,31 @@ from npu_subtitles.routing import (
     SubtitleCue,
     BITMAP,
 )
+from npu_subtitles.paths import SAMPLE_RATE, SPEECH_RMS_THRESHOLD
+from npu_subtitles.timeline import position_jumped
 from npu_subtitles.translation.languages import available_subtitle_languages
 
 ROOT = Path(__file__).resolve().parent
+
+
+class PlaybackJumps:
+    """Restart a plugin loop on an mpv seek event or a timeline position jump."""
+
+    def __init__(self):
+        self.previous = None
+
+    def observe(self, session, position):
+        seek = any(e.get("event") == "seek" for e in session.ipc.events)
+        session.ipc.events.clear()
+        now = time.monotonic()
+        previous, self.previous = self.previous, (position, now)
+        if seek or previous is None:
+            return seek
+        delta = position - previous[0]
+        # No speed makes this a jump, so ordinary ticks skip a synchronous IPC request.
+        if -0.15 <= delta <= 0.8:
+            return False
+        return position_jumped(delta, now - previous[1], float(session.get("speed")))
 
 
 class Session:
@@ -191,14 +213,9 @@ def extract_subtitle(args, track, metadata):
 
 
 def draw(session, text):
-    from npu_subtitles.ass import ass_text
+    from npu_subtitles.ass import overlay_event
 
-    session.message(
-        "npu-overlay",
-        "{\\an2\\pos(640,678)\\fnMicrosoft YaHei\\fs24\\bord1.6\\shad0.5}" + ass_text(text)
-        if text
-        else "",
-    )
+    session.message("npu-overlay", overlay_event(text))
 
 
 def subtitle_loop(session, route, cues):
@@ -210,7 +227,7 @@ def subtitle_loop(session, route, cues):
     model_future = executor.submit(SubtitleTranslator, route.source)
     translator, future, pending = None, None, None
     ready, failed = {}, set()
-    previous, shown = None, None
+    jumps, shown = PlaybackJumps(), None
     try:
         session.status("loading-translation", route=asdict(route))
         while session.current():
@@ -234,16 +251,11 @@ def subtitle_loop(session, route, cues):
                 continue
             position = float(position) - float(session.get("sub-delay"))
             paused = bool(session.get("pause"))
-            seek = any(e.get("event") == "seek" for e in session.ipc.events)
-            session.ipc.events.clear()
-            if seek or (
-                previous is not None and (position < previous - 0.5 or position > previous + 3)
-            ):
+            if jumps.observe(session, position):
                 cancelled.set()
                 failed.clear()
                 shown = None
                 session.clear()
-            previous = position
             if future is not None and future.done():
                 try:
                     translated = future.result()
@@ -321,9 +333,13 @@ def audio_mapping(session, metadata):
     return indices[0]
 
 
-def audio_slice(session, track, start, duration, generation=0):
-    from npu_subtitles.paths import SAMPLE_RATE
+def rms(pcm):
+    import numpy as np
 
+    return float(np.sqrt(np.mean(pcm * pcm))) if len(pcm) else 0.0
+
+
+def audio_slice(session, track, start, duration, generation=0):
     begin, end = round(start * SAMPLE_RATE), round((start + duration) * SAMPLE_RATE)
     reader = session.audio_reader(track)
     return reader.submit(begin, end, start, generation, end / SAMPLE_RATE).result()["pcm"]
@@ -352,7 +368,7 @@ def detect_audio(session, track):
                 if duration is not None
                 else np.zeros(0, dtype="<f4")
             )
-            if len(pcm) and np.sqrt(np.mean(pcm * pcm)) >= 0.008:
+            if rms(pcm) >= SPEECH_RMS_THRESHOLD:
                 result = model.generate(pcm, language="auto", return_timestamps=False)
                 found = language(getattr(result, "detected_language", ""))
                 score = getattr(result, "language_score", 0.0)
@@ -389,8 +405,8 @@ def chinese_loop(session, track):
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chinese-npu")
     load = executor.submit(SenseVoicePipeline, ROOT / "models/sensevoice-small-ov")
     model, future, pending = None, None, None
-    generation, previous, cursor = 0, None, None
-    cues, shown = [], None
+    generation, cursor = 0, None
+    jumps, cues, shown = PlaybackJumps(), [], None
 
     def recognize(start, end, request_generation):
         try:
@@ -400,22 +416,23 @@ def chinese_loop(session, track):
             # skips only that window. Model failures still end the session.
             return [], end, f"{type(exc).__name__}: {exc}"
         pcm = np.frombuffer(pcm, dtype="<f4")
-        if not len(pcm) or np.sqrt(np.mean(pcm * pcm)) < 0.008:
+        if rms(pcm) < SPEECH_RMS_THRESHOLD:
             return [], end, None
         # Prefer an acoustic pause in the latter half of the granted window.
         # Never cut because of recognized words or a particular test sentence.
-        width = 320  # 20 ms at 16 kHz
+        width = SAMPLE_RATE // 50  # 20 ms
         frames = len(pcm) // width
         if frames:
-            quiet = np.sqrt(np.mean(pcm[: frames * width].reshape(-1, width) ** 2, axis=1)) < 0.008
+            energy = np.sqrt(np.mean(pcm[: frames * width].reshape(-1, width) ** 2, axis=1))
+            quiet = energy < SPEECH_RMS_THRESHOLD
             run, cut = 0, None
             for i, value in enumerate(quiet):
                 run = run + 1 if value else 0
                 if run >= 10 and i >= frames // 2:
                     cut = (i - run // 2) * width
-            if cut and cut >= 16000:
+            if cut and cut >= SAMPLE_RATE:
                 pcm = pcm[:cut]
-                end = start + len(pcm) / 16000
+                end = start + len(pcm) / SAMPLE_RATE
         result = model.generate(pcm, language="zh")
         return (
             [
@@ -446,20 +463,13 @@ def chinese_loop(session, track):
                 continue
             position, duration = float(position), float(duration)
             paused = bool(session.get("pause"))
-            seek = any(e.get("event") == "seek" for e in session.ipc.events)
-            session.ipc.events.clear()
-            if (
-                cursor is None
-                or seek
-                or (previous is not None and (position < previous - 0.5 or position > previous + 3))
-            ):
+            if jumps.observe(session, position) or cursor is None:
                 generation += 1
                 session.audio_reader(track).cancel_before(generation)
                 cues = []
                 cursor = position
                 shown = None
                 session.clear()
-            previous = position
             if future is not None and future.done():
                 result, decoded_end, error = future.result()
                 if pending == generation and error is not None:

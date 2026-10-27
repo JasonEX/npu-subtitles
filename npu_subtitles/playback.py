@@ -166,15 +166,18 @@ class CaptionDisplay:
         self.text = text
         self.expires_at = deadline
         if self.player == "mpv":
-            from npu_subtitles.ass import ass_text
+            from npu_subtitles.ass import OVERLAY_RES_X, OVERLAY_RES_Y, overlay_event
 
-            # osd-overlay uses libass events directly; text cannot inject tags.
-            styled = (
-                f"{{\\an2\\pos(640,678)\\fn{self.font}\\fs{self.font_size:g}"
-                "\\bord1.6\\shad0.5\\1c&HFFFFFF&\\3c&H000000&}" + ass_text(text)
-            )
             self.ipc.command(
-                "osd-overlay", OVERLAY_ID, "ass-events", styled, 1280, 720, 0, False, False
+                "osd-overlay",
+                OVERLAY_ID,
+                "ass-events",
+                overlay_event(text, self.font, self.font_size),
+                OVERLAY_RES_X,
+                OVERLAY_RES_Y,
+                0,
+                False,
+                False,
             )
         else:
             # The file transports only this approved frame. It is never an

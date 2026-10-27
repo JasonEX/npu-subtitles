@@ -300,9 +300,29 @@ def run_asr(lang, config):
         before = float(ipc.get("time-pos"))
         time.sleep(0.5)
         assert abs(float(ipc.get("time-pos")) - before) < 0.2
+        before_seek = helper_log.read_text(encoding="utf-8")
         ipc.command("seek", 1, "absolute+exact")
         ipc.command("set_property", "pause", False)
-        time.sleep(0.5)
+        if lang == "zh":
+            # Require fresh, nonempty recognition at the new position; merely
+            # keeping the helper alive after seek does not prove recovery.
+            def recognized_after_seek():
+                content = helper_log.read_text(encoding="utf-8")[len(before_seek):]
+                for line in content.splitlines():
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if entry.get("event") == "chinese_recognized":
+                        cues = entry.get("cues", [])
+                        if cues and all(c["start"] >= 1 for c in cues):
+                            return cues
+                assert state().get("status") != "error", content
+                return None
+
+            report["recognized_after_seek"] = wait_for(recognized_after_seek, 30)
+        else:
+            time.sleep(0.5)
         ipc.command("loadfile", str(OUT / "chinese.mkv"), "replace")
         report["switch_to_chinese"] = wait_for(
             lambda: s if (s := state()).get("status") == "native-zh" else None

@@ -10,6 +10,7 @@ local fingerprint, status = '', 'idle'
 local seek_serial = 0
 local last_overlay, last_aid = '', nil
 local overlay = mp.create_osd_overlay('ass-events')
+-- Must equal npu_subtitles.ass.OVERLAY_RES_X/Y used by the helper's events.
 overlay.res_x, overlay.res_y, overlay.z = 1280, 720, 0
 
 local function state()
@@ -30,21 +31,71 @@ local function stop()
     if loaded and o.enabled and not manual then status='switching' end
     state()
 end
-local function normalize(lang)
-    lang = (lang or ''):lower():match('^[^_-]+') or ''
-    local aliases = {zh='zh',zho='zh',chi='zh',chs='zh',cht='zh',cmn='zh',yue='zh',
-                     en='en',eng='en',ja='ja',jpn='ja'}
-    return aliases[lang] or lang
+-- Mirrors npu_subtitles.routing (ALIASES, CHINESE_TITLE_HINTS, TITLE_HINTS,
+-- SUFFIX_TAGS and track_language); tests compare these tables with Python.
+local aliases = {
+    ['zh']='zh', ['zho']='zh', ['chi']='zh', ['chs']='zh', ['cht']='zh', ['cmn']='zh',
+    ['yue']='zh', ['chinese']='zh', ['mandarin']='zh', ['en']='en', ['eng']='en', ['english']='en',
+    ['ja']='ja', ['jpn']='ja', ['japanese']='ja', ['ko']='ko', ['kor']='ko', ['korean']='ko',
+    ['한국어']='ko', ['es']='es', ['spa']='es', ['spanish']='es', ['español']='es', ['fr']='fr',
+    ['fra']='fr', ['fre']='fr', ['french']='fr', ['français']='fr', ['de']='de', ['deu']='de',
+    ['ger']='de', ['german']='de', ['deutsch']='de', ['pt']='pt', ['por']='pt', ['portuguese']='pt',
+    ['português']='pt', ['it']='it', ['ita']='it', ['italian']='it', ['italiano']='it', ['ru']='ru',
+    ['rus']='ru', ['russian']='ru', ['русский']='ru', ['hi']='hi', ['hin']='hi', ['hindi']='hi',
+    ['हिन्दी']='hi', ['हिंदी']='hi',
+}
+local chinese_title_hints = {
+    ['中文']=true, ['汉语']=true, ['漢語']=true, ['简体']=true, ['簡體']=true, ['繁体']=true,
+    ['繁體']=true, ['中英']=true, ['英中']=true, ['日中']=true, ['中日']=true,
+}
+local title_hints = {
+    ['日本語']='ja', ['日语']='ja', ['日語']='ja', ['韩语']='ko', ['韓語']='ko',
+    ['西班牙语']='es', ['西班牙語']='es', ['法语']='fr', ['法語']='fr', ['德语']='de',
+    ['德語']='de', ['葡萄牙语']='pt', ['葡萄牙語']='pt', ['意大利语']='it', ['義大利語']='it',
+    ['俄语']='ru', ['俄語']='ru', ['印地语']='hi', ['印地語']='hi',
+}
+local suffix_tags = {
+    ['']=true, ['br']=true, ['cc']=true, ['cn']=true, ['default']=true, ['forced']=true,
+    ['gb']=true, ['hans']=true, ['hant']=true, ['sdh']=true, ['tw']=true, ['us']=true,
+}
+local function contains_any(text, hints)
+    for hint in pairs(hints) do
+        if text:find(hint, 1, true) then return true end
+    end
+    return false
+end
+-- Like Python re.split on [\s.\[\]()_-]+, keeping empty leading/trailing parts.
+local function split(text)
+    local parts, start = {}, 1
+    while true do
+        local first, last = text:find('[%s%.%[%]%(%)_%-]+', start)
+        if not first then parts[#parts+1] = text:sub(start); return parts end
+        parts[#parts+1] = text:sub(start, first - 1)
+        start = last + 1
+    end
+end
+local function language(value)
+    local raw = (value or ''):match('^%s*(.-)%s*$'):lower():gsub('_', '-')
+    local code = aliases[raw:match('^[^-]*')]
+    if code then return code end
+    if raw == 'und' or raw == 'unknown' then return '' end
+    return raw
 end
 local function is_chinese(t)
-    if normalize(t.lang) == 'zh' then return true end
     local title = t.title or ''
-    for _, hint in ipairs({'中文','汉语','漢語','简体','簡體','繁体','繁體','中英','英中','中日','日中'}) do
-        if title:find(hint, 1, true) then return true end
+    if contains_any(title, chinese_title_hints) then return true end
+    local declared = language(t.lang)
+    if declared ~= '' then return declared == 'zh' end
+    if contains_any(title, title_hints) then return false end
+    for _, token in ipairs(split(title:lower())) do
+        if aliases[token] then return aliases[token] == 'zh' end
     end
-    local name = (t['external-filename'] or ''):match('[^/\\]+$') or ''
-    for token in name:lower():gmatch('[%a]+') do
-        if normalize(token) == 'zh' then return true end
+    -- A language suffix, not a language word in the movie's own title.
+    local name = (t['external-filename'] or ''):match('[^/\\]*$')
+    local tokens = split((name:match('^(.*)%.') or name):lower())
+    for i = #tokens, 2, -1 do
+        if aliases[tokens[i]] then return aliases[tokens[i]] == 'zh' end
+        if not suffix_tags[tokens[i]] then break end
     end
     return false
 end

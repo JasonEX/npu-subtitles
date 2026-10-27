@@ -7,6 +7,10 @@ import os
 import re
 import time
 
+DEFAULT_FONT = "Microsoft YaHei"
+# osd-overlay coordinate space; player/mpv/npu_subtitles.lua uses the same values.
+OVERLAY_RES_X, OVERLAY_RES_Y = 1280, 720
+
 
 def ass_timestamp(milliseconds: int) -> str:
     """Round SRT's millisecond time to ASS's nearest 10 ms without float drift."""
@@ -29,7 +33,17 @@ def ass_text(text: str) -> str:
     return safe.replace("\n", r"\N")
 
 
-def srt_to_ass(srt: str, font: str = "Microsoft YaHei", font_size: float = 28) -> str:
+def overlay_event(text: str, font: str = DEFAULT_FONT, font_size: float = 24) -> str:
+    """One bottom-centred osd-overlay event, or "" to clear; text cannot inject tags."""
+    if not text:
+        return ""
+    return (
+        f"{{\\an2\\pos({OVERLAY_RES_X // 2},{OVERLAY_RES_Y - 42})\\fn{font}\\fs{font_size:g}"
+        "\\bord1.6\\shad0.5\\1c&HFFFFFF&\\3c&H000000&}" + ass_text(text)
+    )
+
+
+def srt_to_ass(srt: str, font: str = DEFAULT_FONT, font_size: float = 28) -> str:
     """Convert this project's generated SRT to a sized bilingual ASS sidecar."""
     if not font or any(character in font for character in ",\r\n\0"):
         raise ValueError("Subtitle font must be non-empty and contain no commas or line breaks")
@@ -39,7 +53,7 @@ def srt_to_ass(srt: str, font: str = "Microsoft YaHei", font_size: float = 28) -
         "[Script Info]\n"
         "Title: Local generated subtitles\n"
         "ScriptType: v4.00+\n"
-        "PlayResX: 1280\nPlayResY: 720\n"
+        f"PlayResX: {OVERLAY_RES_X}\nPlayResY: {OVERLAY_RES_Y}\n"
         "WrapStyle: 0\nScaledBorderAndShadow: yes\n\n"
         "[V4+ Styles]\n"
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "

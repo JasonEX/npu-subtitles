@@ -60,6 +60,47 @@ ALIASES = {
     "हिन्दी": "hi",
     "हिंदी": "hi",
 }
+# player/mpv/npu_subtitles.lua mirrors ALIASES, the title hints and SUFFIX_TAGS
+# to pick native Chinese tracks without starting Python; tests keep them equal.
+CHINESE_TITLE_HINTS = (
+    "中文",
+    "汉语",
+    "漢語",
+    "简体",
+    "簡體",
+    "繁体",
+    "繁體",
+    "中英",
+    "英中",
+    "日中",
+    "中日",
+)
+TITLE_HINTS = {
+    "日本語": "ja",
+    "日语": "ja",
+    "日語": "ja",
+    "韩语": "ko",
+    "韓語": "ko",
+    "西班牙语": "es",
+    "西班牙語": "es",
+    "法语": "fr",
+    "法語": "fr",
+    "德语": "de",
+    "德語": "de",
+    "葡萄牙语": "pt",
+    "葡萄牙語": "pt",
+    "意大利语": "it",
+    "義大利語": "it",
+    "俄语": "ru",
+    "俄語": "ru",
+    "印地语": "hi",
+    "印地語": "hi",
+}
+TOKEN_SEPARATORS = re.compile(r"[\s.\[\]()_-]+")
+# Release tags that may follow a filename's language suffix.
+SUFFIX_TAGS = frozenset(
+    {"", "sdh", "cc", "forced", "default", "hans", "hant", "cn", "tw", "br", "us", "gb"}
+)
 BITMAP = {"hdmv_pgs_subtitle", "pgs", "dvd_subtitle", "dvb_subtitle", "xsub"}
 # Conservative function-word evidence for untagged text. No vocabulary model,
 # per-video phrases, inference imports, or guesses from Latin/Cyrillic alone.
@@ -136,56 +177,24 @@ def text_language(text: str, declared: str = "") -> str:
 def track_language(track: dict) -> str:
     declared = language(track.get("lang"))
     label = str(track.get("title", ""))
-    if re.search(r"中文|汉语|漢語|简体|簡體|繁体|繁體|中英|英中|日中|中日", label):
+    if any(hint in label for hint in CHINESE_TITLE_HINTS):
         return "zh"
     if declared:
         return declared
-    if re.search(r"日本語|日语|日語", label):
-        return "ja"
-    for hint, code in [
-        ("韩语", "ko"),
-        ("韓語", "ko"),
-        ("西班牙语", "es"),
-        ("西班牙語", "es"),
-        ("法语", "fr"),
-        ("法語", "fr"),
-        ("德语", "de"),
-        ("德語", "de"),
-        ("葡萄牙语", "pt"),
-        ("葡萄牙語", "pt"),
-        ("意大利语", "it"),
-        ("義大利語", "it"),
-        ("俄语", "ru"),
-        ("俄語", "ru"),
-        ("印地语", "hi"),
-        ("印地語", "hi"),
-    ]:
+    for hint, code in TITLE_HINTS.items():
         if hint in label:
             return code
-    for token in re.split(r"[\s.\[\]()_-]+", label.lower()):
+    for token in TOKEN_SEPARATORS.split(label.lower()):
         if token in ALIASES:
             return ALIASES[token]
     # Recognize a language suffix, not a language word in the movie's title
     # (e.g. "It.2017.srt" and "The.French.Connection.srt" are not language tags).
     name = str(track.get("external-filename", "")).rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-    tokens = re.split(r"[\s.\[\]()_-]+", name.rsplit(".", 1)[0].lower())
+    tokens = TOKEN_SEPARATORS.split(name.rsplit(".", 1)[0].lower())
     for token in reversed(tokens[1:]):
         if token in ALIASES:
             return ALIASES[token]
-        if token not in {
-            "",
-            "sdh",
-            "cc",
-            "forced",
-            "default",
-            "hans",
-            "hant",
-            "cn",
-            "tw",
-            "br",
-            "us",
-            "gb",
-        }:
+        if token not in SUFFIX_TAGS:
             break
     return ""
 

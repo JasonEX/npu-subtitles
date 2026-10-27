@@ -12,7 +12,7 @@ Reload command: resource.h ID_SUBTITLES_SUBITEM_START + 2 (2302).
 
 from __future__ import annotations
 
-from npu_subtitles.ass import write_ass
+from npu_subtitles.ass import DEFAULT_FONT, write_ass
 
 import ctypes
 from ctypes import wintypes
@@ -117,7 +117,7 @@ class MpcHCIPC:
         subtitle: Path,
         timeout: float = 5,
         *,
-        font: str = "Microsoft YaHei",
+        font: str = DEFAULT_FONT,
         font_size: float = 28,
     ):
         if os.name != "nt":
@@ -440,7 +440,7 @@ def create_player(
     # range, and is replaced by the first real generated window.
     if not output.exists():
         atomic_srt(output, [Cue(media_end + 1, media_end + 2, "Subtitle buffer")])
-    font = getattr(args, "sub_font", None) or "Microsoft YaHei"
+    font = getattr(args, "sub_font", None) or DEFAULT_FONT
     font_size = getattr(args, "sub_font_size", None)
     font_size = 28 if font_size is None else font_size
     # Validate and produce the sidecar before creating a window or process.
