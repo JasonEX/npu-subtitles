@@ -674,10 +674,13 @@ def run(
             return 0
         raise
     except BaseException as exc:
+        error = f"{type(exc).__name__}: {exc}"
         if player is not None and player.poll() == 0:
-            log("player_closed")
+            # A closed player or detached plugin session ends normally, but the
+            # error that coincided with it must remain visible in the log.
+            log("player_closed", error=error)
             return 0
-        log("error", error=f"{type(exc).__name__}: {exc}")
+        log("error", error=error)
         raise
     finally:
         cancellation.value += 1

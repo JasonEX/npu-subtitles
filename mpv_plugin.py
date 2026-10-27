@@ -13,7 +13,7 @@ os.environ["OPENBLAS_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from dataclasses import asdict
 import gc
 import json
@@ -47,6 +47,7 @@ class Session:
         self.pid = args.pid
         self.audio_id = self.ipc.get("aid")
         self.seek_serial = 0
+        self.readers = {}
 
     @property
     def events(self):
@@ -107,7 +108,20 @@ class Session:
     def clear(self):
         self.message("npu-overlay", "")
 
+    def audio_reader(self, track):
+        """One decoder per FFmpeg audio index; a reader never serves another track."""
+        from npu_subtitles.playback import AudioReader
+
+        if track not in self.readers:
+            self.readers[track] = AudioReader(
+                executable(self.args.ffmpeg, "ffmpeg"), self.args.video, track
+            )
+        return self.readers[track]
+
     def close(self):
+        for reader in self.readers.values():
+            reader.close()
+        self.readers.clear()
         self.ipc.close()
 
 
@@ -307,13 +321,12 @@ def audio_mapping(session, metadata):
     return indices[0]
 
 
-def audio_slice(args, track, start, duration):
-    from npu_subtitles.playback import AudioReader
+def audio_slice(session, track, start, duration, generation=0):
+    from npu_subtitles.paths import SAMPLE_RATE
 
-    if not hasattr(args, "_audio_reader"):
-        args._audio_reader = AudioReader(executable(args.ffmpeg, "ffmpeg"), args.video, track)
-    begin, end = round(start * 16000), round((start + duration) * 16000)
-    return args._audio_reader.submit(begin, end, start, 0, end / 16000).result()["pcm"]
+    begin, end = round(start * SAMPLE_RATE), round((start + duration) * SAMPLE_RATE)
+    reader = session.audio_reader(track)
+    return reader.submit(begin, end, start, generation, end / SAMPLE_RATE).result()["pcm"]
 
 
 def detect_audio(session, track):
@@ -329,11 +342,17 @@ def detect_audio(session, track):
             if not session.current():
                 return ""
             start = float(session.get_optional("time-pos") or 0)
-            duration = min(6.0, float(session.get("duration")) - start)
-            if duration <= 0.3:
+            # Duration is briefly unavailable while mpv seeks; retry later.
+            total = session.get_optional("duration")
+            duration = min(6.0, float(total) - start) if total is not None else None
+            if duration is not None and duration <= 0.3:
                 return ""
-            pcm = np.frombuffer(audio_slice(session.args, track, start, duration), dtype="<f4")
-            if np.sqrt(np.mean(pcm * pcm)) >= 0.008:
+            pcm = (
+                np.frombuffer(audio_slice(session, track, start, duration), dtype="<f4")
+                if duration is not None
+                else np.zeros(0, dtype="<f4")
+            )
+            if len(pcm) and np.sqrt(np.mean(pcm * pcm)) >= 0.008:
                 result = model.generate(pcm, language="auto", return_timestamps=False)
                 found = language(getattr(result, "detected_language", ""))
                 score = getattr(result, "language_score", 0.0)
@@ -373,10 +392,16 @@ def chinese_loop(session, track):
     generation, previous, cursor = 0, None, None
     cues, shown = [], None
 
-    def recognize(start, end):
-        pcm = np.frombuffer(audio_slice(session.args, track, start, end - start), dtype="<f4")
+    def recognize(start, end, request_generation):
+        try:
+            pcm = audio_slice(session, track, start, end - start, request_generation)
+        except (RuntimeError, CancelledError, subprocess.TimeoutExpired) as exc:
+            # A seek kills the obsolete FFmpeg slice, and one undecodable window
+            # skips only that window. Model failures still end the session.
+            return [], end, f"{type(exc).__name__}: {exc}"
+        pcm = np.frombuffer(pcm, dtype="<f4")
         if not len(pcm) or np.sqrt(np.mean(pcm * pcm)) < 0.008:
-            return [], end
+            return [], end, None
         # Prefer an acoustic pause in the latter half of the granted window.
         # Never cut because of recognized words or a particular test sentence.
         width = 320  # 20 ms at 16 kHz
@@ -392,10 +417,14 @@ def chinese_loop(session, track):
                 pcm = pcm[:cut]
                 end = start + len(pcm) / 16000
         result = model.generate(pcm, language="zh")
-        return [
-            SubtitleCue(start + c["start_ts"], start + c["end_ts"], c["text"])
-            for c in result.chunks
-        ], end
+        return (
+            [
+                SubtitleCue(start + c["start_ts"], start + c["end_ts"], c["text"])
+                for c in result.chunks
+            ],
+            end,
+            None,
+        )
 
     try:
         session.status("loading-chinese-asr")
@@ -411,9 +440,12 @@ def chinese_loop(session, track):
             if position is None:
                 time.sleep(0.15)
                 continue
-            position = float(position)
+            duration = session.get_optional("duration")
+            if duration is None:
+                time.sleep(0.15)
+                continue
+            position, duration = float(position), float(duration)
             paused = bool(session.get("pause"))
-            duration = float(session.get("duration"))
             seek = any(e.get("event") == "seek" for e in session.ipc.events)
             session.ipc.events.clear()
             if (
@@ -422,14 +454,24 @@ def chinese_loop(session, track):
                 or (previous is not None and (position < previous - 0.5 or position > previous + 3))
             ):
                 generation += 1
+                session.audio_reader(track).cancel_before(generation)
                 cues = []
                 cursor = position
                 shown = None
                 session.clear()
             previous = position
             if future is not None and future.done():
-                result, decoded_end = future.result()
-                if pending == generation:
+                result, decoded_end, error = future.result()
+                if pending == generation and error is not None:
+                    # The cursor already moved past this window at submission.
+                    print(
+                        json.dumps(
+                            dict(event="chinese_audio_skipped", end=decoded_end, error=error),
+                            ensure_ascii=False,
+                        ),
+                        flush=True,
+                    )
+                elif pending == generation:
                     cursor = decoded_end
                     cues.extend(result)
                     print(
@@ -449,7 +491,7 @@ def chinese_loop(session, track):
                 cursor = max(cursor, position)
                 end = min(cursor + 8, position + 8, duration)
                 pending = generation
-                future = executor.submit(recognize, cursor, end)
+                future = executor.submit(recognize, cursor, end, generation)
                 cursor = end
             time.sleep(0.1 if not paused else 0.25)
     finally:
@@ -562,8 +604,6 @@ def main():
             session.status("error", error=str(exc))
         return 1
     finally:
-        if hasattr(args, "_audio_reader"):
-            args._audio_reader.close()
         if session.current():
             session.clear()
         session.close()

@@ -147,6 +147,187 @@ class TranslationPreparationTests(unittest.TestCase):
         self.assertEqual(prepare_translation("Alice, please wait.").output_prefix, "")
 
 
+class FakeBackend:
+    execution_devices = ["NPU"]
+
+    def details(self):
+        return {"execution_devices": {"en_zh": ["NPU"]}}
+
+    def close(self):
+        pass
+
+
+def fake_backends(**settings):
+    # Module-level so the spawned inference worker can import it.
+    return FakeBackend(), FakeBackend()
+
+
+class FakePluginSession:
+    """The subset of mpv_plugin.Session used by the audio loops."""
+
+    def __init__(self, positions, durations, reader, stop_when):
+        self.positions, self.durations = iter(positions), iter(durations)
+        self.reader, self.stop_when = reader, stop_when
+        self.ipc = SimpleNamespace(events=[])
+        self.overlays, self.statuses = [], []
+
+    def current(self):
+        return not self.stop_when(self)
+
+    def status(self, value, **details):
+        self.statuses.append(value)
+
+    def message(self, name, value):
+        self.overlays.append(value)
+
+    def clear(self):
+        self.message("npu-overlay", "")
+
+    def get(self, name):
+        return {"pause": False}[name]
+
+    def get_optional(self, name):
+        return next(self.positions if name == "time-pos" else self.durations)
+
+    def audio_reader(self, track):
+        return self.reader
+
+
+class FakeReader:
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+        self.submitted, self.cancelled = [], []
+
+    def submit(self, start_sample, end_sample, seen, generation, read_limit):
+        from concurrent.futures import Future
+
+        self.submitted.append(generation)
+        future = Future()
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            future.set_exception(outcome)
+        else:
+            future.set_result({"pcm": outcome})
+        return future
+
+    def cancel_before(self, generation):
+        self.cancelled.append(generation)
+
+
+class FakeSenseVoice:
+    execution_devices = ["NPU"]
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def generate(self, pcm, language, **kwargs):
+        return SimpleNamespace(
+            chunks=[dict(start_ts=0.5, end_ts=3.0, text="你好")],
+            texts=["hello there"],
+            detected_language="en",
+            language_score=0.95,
+        )
+
+
+class PluginRobustnessTests(unittest.TestCase):
+    def test_session_keeps_one_audio_reader_per_track(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        import mpv_plugin
+
+        args = SimpleNamespace(ipc="pipe", pid=1, token="t", video=Path("v.mkv"), ffmpeg=None)
+        with (
+            patch("mpv_plugin.MpvIPC"),
+            patch("mpv_plugin.executable", return_value="ffmpeg"),
+        ):
+            session = mpv_plugin.Session(args)
+            first, second = session.audio_reader(0), session.audio_reader(1)
+            self.assertIs(session.audio_reader(0), first)
+            self.assertIsNot(first, second)
+            self.assertEqual((first.audio_track, second.audio_track), (0, 1))
+            session.close()
+        self.assertTrue(first.closed and second.closed)
+        self.assertEqual(session.readers, {})
+
+    def test_chinese_asr_skips_undecodable_window_and_waits_for_duration(self):
+        import contextlib
+        import io
+        from unittest.mock import patch
+        import numpy as np
+        import mpv_plugin
+
+        speech = np.full(16000 * 8, 0.1, dtype="<f4").tobytes()
+        reader = FakeReader(RuntimeError("ffmpeg: corrupt packet"), speech)
+        shown = lambda session: any("你好" in text for text in session.overlays)  # noqa: E731
+        session = FakePluginSession(
+            positions=[0.0] + [0.5 * i for i in range(400)],
+            durations=[None] + [60.0] * 400,
+            reader=reader,
+            stop_when=shown,
+        )
+        output = io.StringIO()
+        with (
+            patch("npu_subtitles.asr.sensevoice.SenseVoicePipeline", FakeSenseVoice),
+            contextlib.redirect_stdout(output),
+        ):
+            mpv_plugin.chinese_loop(session, 0)
+        self.assertTrue(shown(session))
+        self.assertIn("chinese_audio_skipped", output.getvalue())
+        self.assertEqual(reader.cancelled, [1])
+        self.assertEqual(reader.submitted, [1, 1])
+
+    def test_language_probe_retries_when_duration_is_unavailable(self):
+        from unittest.mock import patch
+        import numpy as np
+        import mpv_plugin
+
+        clock = iter(range(0, 10_000, 1))
+        reader = FakeReader(np.full(16000 * 6, 0.1, dtype="<f4").tobytes())
+        session = FakePluginSession(
+            positions=[1.0, 5.0],
+            durations=[None, 60.0],
+            reader=reader,
+            stop_when=lambda session: False,
+        )
+        with (
+            patch("npu_subtitles.asr.sensevoice.SenseVoicePipeline", FakeSenseVoice),
+            patch("mpv_plugin.time", SimpleNamespace(monotonic=lambda: next(clock), sleep=Mock())),
+        ):
+            self.assertEqual(mpv_plugin.detect_audio(session, 0), "en")
+        self.assertEqual(reader.submitted, [0])
+
+
+class AttachedErrorLoggingTests(unittest.TestCase):
+    def test_error_is_logged_when_player_closes_at_the_same_time(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from npu_subtitles import app
+
+        with tempfile.TemporaryDirectory() as directory:
+            args = app.parser().parse_args(
+                ["v.mkv", "--output-dir", directory, "--cache-dir", directory]
+            )
+            args.asr_model = Path(directory) / "asr"
+            ipc = Mock()
+            ipc.get_optional.side_effect = RuntimeError("IPC failed")
+            attachment = Mock()
+            attachment.current.return_value = True
+            # poll() == 0 is how an attached session reports that it ended.
+            attachment.connect.return_value = (Mock(pid=1, poll=Mock(return_value=0)), ipc, 1)
+            with patch.object(
+                app, "validate", return_value=(Path(directory) / "v.mkv", "ffmpeg", 10.0, 1)
+            ):
+                self.assertEqual(app.run(args, fake_backends, attachment=attachment), 0)
+            (log_path,) = Path(directory).glob("*.jsonl")
+            events = [
+                json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
+            ]
+        closed = [event for event in events if event["event"] == "player_closed"]
+        self.assertEqual(closed[0]["error"], "RuntimeError: IPC failed")
+
+
 class ExecutableDiscoveryTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "win32", "Windows executable discovery")
     def test_mpv_executable_takes_priority_over_console_wrapper(self):
